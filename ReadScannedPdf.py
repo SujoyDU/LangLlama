@@ -34,5 +34,7 @@ def read_image(image_str):
 
 
 pdf_path = "2025-26-westchester-rgb-explanatory-statement.pdf"
-read_image(pdf_to_images(pdf_path)) 
+
+pdf_to_images(pdf_path)
+#read_image(pdf_to_images(pdf_path)) 
     
