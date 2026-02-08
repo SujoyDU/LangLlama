@@ -20,7 +20,8 @@ def format_response_metadata(metadata: dict) -> None:
     """
 
     if not metadata:
-        return "No response metadata available."
+        print("No response metadata available.")
+        return
 
     def ns_to_ms(ns):
         return round(ns / 1_000_000, 2)
@@ -168,16 +169,19 @@ def logging_info(json_data: dict) -> None:
     
 
 @tool
-def convert_temp_to_celcius(temp_f: Union[float, int]) -> Union[float, int]:
-    """This tool converts a temperature from Fahrenheit to Celsius."""
+def convert_temp_to_celsius(temp_f: Union[float, int]) -> Union[float, int]:
+    """Converts Fahrenheit to Celsius. 
+        Input 'temp_f' MUST be a number representing the temperature in Fahrenheit."""
+
     temp_c = (temp_f - 32) * 5.0/9.0
-    print(f"\n[TOOL CALL] convert_temp_to_celcius(temp_f={temp_f})")
+    print(f"\n[TOOL CALL] convert_temp_to_celsius(temp_f={temp_f})")
     print(f"[TOOL OUTPUT] temp_c = {temp_c}")
     return temp_c
 
 @tool
 def convert_temp_to_kelvin(temp_f: Union[float, int]) -> Union[float, int]:
-    """This tool converts a temperature from Fahrenheit to Kelvin."""
+    """Converts Fahrenheit to Kelvin. 
+        Input 'temp_f' MUST be a number representing the temperature in Fahrenheit."""
     temp_k = (temp_f - 32) * 5.0/9.0 + 273.15
     print(f"\n[TOOL CALL] convert_temp_to_kelvin(temp_f={temp_f})")
     print(f"[TOOL OUTPUT] temp_k = {temp_k}")
@@ -188,16 +192,8 @@ def convert_temp_to_kelvin(temp_f: Union[float, int]) -> Union[float, int]:
 
 def model_call(state: AgentState) -> AgentState:
     """This function calls the llm"""
+    response = llm_tool.invoke(state["messages"])
     
-    system_prompt = """
-        You are an expert meteorologist assistant that helps classify given temperatures from User as 
-        freezing, cold, warm, or hot. You can use the provided tools to convert temperatures from Fahrenheit to Celsius and Kelvin."""
-        
-    messages = [
-        SystemMessage(content=system_prompt)
-    ]
-    
-    response = llm_tool.invoke(messages + state["messages"])
     print(f"\n[MODEL CALL RESPONSE] {response.content}")
     return {"messages":[response]}
 
@@ -228,13 +224,23 @@ def main() -> None:
         if user_input.lower().strip() == "finish":
             print("Good-bye!")
             break
-
+        
+        system_prompt = """
+        You are an expert meteorologist assistant that helps classify given temperatures from User as 
+        freezing, cold, warm, or hot. You MUST use the tool arguments exactly as defined. For example, use 'temp_f' for the Fahrenheit value. "
+        You also convert the temperature to Kelvin. Do not use internal calculations. Only use the tools for conversion"""
+        
+        system_message= SystemMessage(content=system_prompt)
+        
         # Create the initial state (only the user message)
         user_message = HumanMessage(content=user_input)
         
         # Run the agent with streaming output
+        input_message = [system_message, user_message]
+
+        
         last_state = None
-        for chunk in app.stream({"messages": [user_message]}, stream_mode="values"):
+        for chunk in app.stream({"messages": input_message}, stream_mode="values"):
             last_state = chunk
             message = chunk["messages"][-1]
             if isinstance(message, ToolMessage):
@@ -250,23 +256,16 @@ def main() -> None:
         print(f"Final Agent: {answer}")
         
         for ai_msg in all_ai_messages_from_state(last_state):
-        
-            ai_msg.pretty_print()
+            if ai_msg.tool_calls:
+                continue
+            format_response_metadata(ai_msg.response_metadata)
 
-            # 4b – get the metadata dict – depends on the LLM you used.
-            #   With LangChain / Ollama the reply object typically stores
-            #   it in a `response_metadata` attribute.
-            metadata = getattr(ai_msg, "response_metadata", None)
-            if metadata:
-                format_response_metadata(metadata)      # the function you posted
-            else:
-                print("⚠️  AI reply has no `response_metadata` – nothing logged.")
 
 
 if __name__ == "__main__":
     model = "gpt-oss:20b"
     llm = ChatOllama(model= model)
-    Tools = [convert_temp_to_celcius, convert_temp_to_kelvin]
+    Tools = [convert_temp_to_celsius, convert_temp_to_kelvin]
 
     llm_tool = llm.bind_tools(Tools)
     graph = StateGraph(AgentState)

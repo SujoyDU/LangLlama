@@ -3,3 +3,5 @@ pdf2image
 poppler-utils
 langchain
 langchain_ollama
+num2words
+IPython
