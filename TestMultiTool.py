@@ -188,8 +188,6 @@ def convert_temp_to_kelvin(temp_f: Union[float, int]) -> Union[float, int]:
     return temp_k
 
 
-
-
 def model_call(state: AgentState) -> AgentState:
     """This function calls the llm"""
     response = llm_tool.invoke(state["messages"])
@@ -227,8 +225,9 @@ def main() -> None:
         
         system_prompt = """
         You are an expert meteorologist assistant that helps classify given temperatures from User as 
-        freezing, cold, warm, or hot. You MUST use the tool arguments exactly as defined. For example, use 'temp_f' for the Fahrenheit value. "
-        You also convert the temperature to Kelvin. Do not use internal calculations. Only use the tools for conversion"""
+        freezing, cold, warm, or hot. You MUST use the tool arguments exactly as defined. For example, use 'temp_f' for the Fahrenheit value.
+        You need to convert the temperature to Celsius. You also convert the temperature to Kelvin. 
+        Do not use internal calculations. Only use the tools for conversion"""
         
         system_message= SystemMessage(content=system_prompt)
         
