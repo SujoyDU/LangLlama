@@ -1,4 +1,5 @@
-from typing import TypedDict, List
+from typing import TypedDict, List, Annotated
+import operator
 from pathlib import Path
 from io import BytesIO
 import base64
@@ -6,7 +7,7 @@ import os
 import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
-
+from langgraph.types import Send
 from pdf2image import convert_from_path
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -98,13 +99,44 @@ def format_response_metadata(metadata: dict) -> None:
     
     #print(json.dumps(json_data, indent=2))
     
-    logging_info(json_data)
+    logging_info_parallel(json_data)
 
+
+def logging_info_parallel(json_data: dict) -> None:
+    """
+    Concurrency-safe logging.
+    Writes one JSON object per line (JSONL).
+    """
+    # Eastern Time (America/New_York) – automatically uses EST/EDT
+    eastern_now = datetime.now(tz=ZoneInfo("America/New_York"))
+
+    # Format only the date part
+    today_date = eastern_now.strftime("%Y-%m-%d")
+    
+    # 1. Resolve the folder where the log lives.
+    log_dir: Path = Path("~/Documents/MyWorkspace/ProjectLogs").expanduser()
+
+    # 2. Make sure the folder exists (no error if it already does).
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 3. Full path to the file. Create a new file each day, so you can easily manage log size and keep things organized.
+    
+    file_path: Path = log_dir / f"activity_{today_date}.jsonl" 
+
+
+    # Add server-side timestamp (always useful in parallel)
+    json_data["logged_at"] = datetime.now(tz=ZoneInfo("America/New_York")).isoformat()
+
+    # Atomic append
+    with open(file_path, "a", encoding="utf-8") as fp:
+        fp.write(json.dumps(json_data, ensure_ascii=False))
+        fp.write("\n")
+    print(f"Entry appended to: {file_path}")
     
 
 def logging_info(json_data: dict) -> None:
     """
-    Append the supplied ``json_data`` to a JSON‑array log.
+    Append the supplied ``json_data`` to a JSON-array log.
 
     The function will:
       * create (and keep) a single `activity.log` file,
@@ -167,13 +199,15 @@ def logging_info(json_data: dict) -> None:
 
     
 
-
-
 class OCRState(TypedDict):
     pdf_path: str
     images: List[str]
-    page_index: int
+    final_results: Annotated[List[dict], operator.add] 
+    
 
+class PageState(TypedDict):
+    image: str
+    page_number: int
 
 def pdf_to_images_node(state: OCRState) -> OCRState:
     pdf_path = state["pdf_path"]
@@ -192,21 +226,40 @@ def pdf_to_images_node(state: OCRState) -> OCRState:
     return {
         "pdf_path": pdf_path,
         "images": images,
-        "page_index": 0,
+        
     }
 
+def fan_out_pages(state: OCRState):
+    sends = []
 
-def ocr_page_node(state: OCRState) -> OCRState:
-    idx = state["page_index"]
-    image_str = state["images"][idx]
+    for i, img in enumerate(state["images"]):
+        sends.append(
+            Send(
+                "ocr_page",
+                {
+                    "image": img,
+                    "page_number": i + 1
+                }
+            )
+        )
+
+    return sends
+
+
+def ocr_page_node(state: PageState) -> dict:
+    idx = state["page_number"]
+    image_str = state["image"]
 
     llm = ChatOllama(model="qwen3-vl:8b", temperature=0)
 
     messages = [
-        SystemMessage(content="Extract all text and tables. Preserve layout."),
+        SystemMessage(content=(
+        "Extract all text and tables from this image. Preserve the layout. "
+        "IMPORTANT: Do not include page numbers, headers, or footers in your output."
+         )),
         HumanMessage(
             content=[
-                {"type": "text", "text": f"OCR page {idx + 1}"},
+                {"type": "text", "text": f"OCR page {idx}"},
                 {
                     "type": "image_url",
                     "image_url": {"url": f"data:image/png;base64,{image_str}"}
@@ -216,50 +269,55 @@ def ocr_page_node(state: OCRState) -> OCRState:
     ]
 
     response = llm.invoke(messages)
-
-    # Write text
-    with open("extracted_text.txt", "a", encoding="utf-8") as f:
-        f.write(f"\n\n--- Page {idx + 1} ---\n")
-        f.write(response.content)
-
-    # Log metadata
+      # Log metadata
     format_response_metadata(response.response_metadata)
-
+    
     return {
-        **state,
-        "page_index": idx + 1
+        "final_results": [{"page": idx, "text": response.content}]
     }
 
-def has_more_pages(state: OCRState) -> str:
-    return "continue" if state["page_index"] < len(state["images"]) else "end"
+
+def save_results_node(state: OCRState):
+    """This method sorts the final results by page number and writes each of the extracted text to file"""
+    sorted_results = sorted(state["final_results"], key=lambda x: x["page"])
+    
+    with open("extracted_text.txt", "w", encoding="utf-8") as f:
+        for entry in sorted_results:
+            f.write(f"\n\n--- Page {entry['page']} ---\n")
+            f.write(entry['text'])
+    return state
+
 
 graph = StateGraph(OCRState)
 
 graph.add_node("pdf_to_images", pdf_to_images_node)
 graph.add_node("ocr_page", ocr_page_node)
-
+graph.add_node("fan_out_pages", fan_out_pages)
+graph.add_node("save_results", save_results_node)
 graph.add_edge(START, "pdf_to_images")
-graph.add_edge("pdf_to_images", "ocr_page")
-
 graph.add_conditional_edges(
-    "ocr_page",
-    has_more_pages,
-    {
-        "continue": "ocr_page",
-        "end": END
-    }
+    "pdf_to_images", 
+    fan_out_pages, 
+    ["ocr_page"] # This declares the possible destination nodes
 )
 
+graph.add_edge("ocr_page", "save_results")
+graph.add_edge("save_results", END)
+
+
 app = graph.compile()
+
+g_img = app.get_graph().draw_mermaid_png()
+with open("fanout_graph.png", "wb") as f:
+    f.write(g_img)
 
 # Clear output file once
 Path("extracted_text.txt").write_text("", encoding="utf-8")
 
-pdf_path = "2025-26-westchester-rgb-explanatory-statement-pages-4.pdf"
+pdf_path = "2025-26-westchester-rgb-explanatory-statement-pages-1.pdf"
 
 final_state = app.invoke({
     "pdf_path": pdf_path
 })
 
-print(f"Final Response: {final_state}")
 print("✅ OCR complete")
