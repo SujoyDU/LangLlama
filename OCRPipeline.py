@@ -270,6 +270,7 @@ def ocr_page_node(state: PageState) -> dict:
 
     response = llm.invoke(messages)
       # Log metadata
+    print(f"Processed Page: {idx}\n")
     format_response_metadata(response.response_metadata)
     
     return {
@@ -281,7 +282,7 @@ def save_results_node(state: OCRState):
     """This method sorts the final results by page number and writes each of the extracted text to file"""
     sorted_results = sorted(state["final_results"], key=lambda x: x["page"])
     
-    with open("extracted_text.txt", "w", encoding="utf-8") as f:
+    with open("extracted_text_all.txt", "w", encoding="utf-8") as f:
         for entry in sorted_results:
             f.write(f"\n\n--- Page {entry['page']} ---\n")
             f.write(entry['text'])
@@ -312,9 +313,9 @@ with open("fanout_graph.png", "wb") as f:
     f.write(g_img)
 
 # Clear output file once
-Path("extracted_text.txt").write_text("", encoding="utf-8")
+Path("extracted_text_all.txt").write_text("", encoding="utf-8")
 
-pdf_path = "2025-26-westchester-rgb-explanatory-statement-pages-1.pdf"
+pdf_path = "2025-26-westchester-rgb-explanatory-statement.pdf"
 
 final_state = app.invoke({
     "pdf_path": pdf_path
